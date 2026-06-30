@@ -15,11 +15,90 @@ export default function App() {
   const [showApiModal, setShowApiModal] = useState(false);
   const [statusMsg, setStatusMsg] = useState({ text: '', type: '' });
 
-  // Carregar chaves de API e histórico ao iniciar
+  const [jogosAoVivo, setJogosAoVivo] = useState([]);
+  const [telegramToken, setTelegramToken] = useState('');
+  const [telegramChatId, setTelegramChatId] = useState('');
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [telegramMinProb, setTelegramMinProb] = useState(70);
+
+  // Carregar chaves de API, histórico, configuração do telegram e jogos ao vivo
   useEffect(() => {
     fetchChaves();
     fetchHistorico();
+    fetchTelegramConfig();
+    fetchJogosAoVivo();
+    const interval = setInterval(fetchJogosAoVivo, 30000); // atualiza a cada 30 segundos
+    return () => clearInterval(interval);
   }, []);
+
+  const fetchTelegramConfig = async () => {
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/telegram/config');
+      const data = await res.json();
+      setTelegramToken(data.token || '');
+      setTelegramChatId(data.chat_id || '');
+      setTelegramEnabled(data.enabled || false);
+      setTelegramMinProb(data.min_prob || 70);
+    } catch (e) {
+      console.log('Erro ao carregar configurações do Telegram.');
+    }
+  };
+
+  const saveTelegramConfig = async () => {
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/telegram/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: telegramToken.trim(),
+          chat_id: telegramChatId.trim(),
+          enabled: telegramEnabled,
+          min_prob: Number(telegramMinProb)
+        })
+      });
+      if (res.ok) {
+        showStatus('Configurações do Telegram salvas com sucesso!');
+      } else {
+        throw new Error();
+      }
+    } catch (e) {
+      showStatus('Erro ao salvar configurações do Telegram.', 'error');
+    }
+  };
+
+  const testTelegramBot = async () => {
+    showStatus('Enviando mensagem de teste...', 'info');
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/telegram/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: telegramToken.trim(),
+          chat_id: telegramChatId.trim(),
+          enabled: true,
+          min_prob: Number(telegramMinProb)
+        })
+      });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        showStatus('Mensagem de teste enviada! Verifique seu Telegram.');
+      } else {
+        showStatus(`Erro no teste: ${data.detail || 'Verifique as credenciais.'}`, 'error');
+      }
+    } catch (e) {
+      showStatus('Erro de conexão ao testar robô.', 'error');
+    }
+  };
+
+  const fetchJogosAoVivo = async () => {
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/jogos/aovivo');
+      const data = await res.json();
+      setJogosAoVivo(data.jogos || []);
+    } catch (e) {
+      console.log('Erro ao carregar jogos ao vivo.');
+    }
+  };
 
   const fetchChaves = async () => {
     try {
@@ -45,6 +124,7 @@ export default function App() {
     setStatusMsg({ text, type });
     setTimeout(() => setStatusMsg({ text: '', type: '' }), 5000);
   };
+
 
   const addKey = async () => {
     if (!novaChave.trim()) return;
@@ -110,6 +190,26 @@ export default function App() {
     setAbaAtiva(item.match_id);
     setTimeout(() => atualizarDadosJogo(item.match_id), 100);
   };
+
+  const abrirJogoAoVivo = (item) => {
+    if (jogos.some(j => j.id === item.match_id)) {
+      setAbaAtiva(item.match_id);
+      return;
+    }
+
+    const novoJogo = {
+      id: item.match_id,
+      nome: item.nome,
+      dados: null,
+      manualMin: item.minuto,
+      isManual: false
+    };
+
+    setJogos(prev => [...prev, novoJogo]);
+    setAbaAtiva(item.match_id);
+    setTimeout(() => atualizarDadosJogo(item.match_id), 100);
+  };
+
 
   const deletarDoHistorico = async (e, matchId) => {
     e.stopPropagation();
@@ -288,66 +388,140 @@ export default function App() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#0b0c10', color: '#c5c6c7' }}>
       
-      {/* Menu / Sidebar Lateral do Histórico */}
+      {/* Menu / Sidebar Lateral do Histórico e Jogos Ao Vivo */}
       <div style={{
-        width: '280px',
+        width: '300px',
         backgroundColor: '#11131e',
         borderRight: '1px solid #1f2335',
         display: 'flex',
         flexDirection: 'column',
         gap: '20px',
-        padding: '20px'
+        padding: '20px',
+        overflowY: 'auto'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', borderBottom: '1px solid #1f2335', paddingBottom: '15px' }}>
-          <Layers style={{ color: '#10b981' }} size={20} />
-          <h2 style={{ fontSize: '0.95rem', fontWeight: 'bold', color: '#fff', letterSpacing: '0.5px' }}>HISTÓRICO SALVO</h2>
+        {/* Seção 1: Jogos Ao Vivo */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #1f2335', paddingBottom: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Activity style={{ color: '#ef4444' }} size={18} />
+              <h2 style={{ fontSize: '0.9rem', fontWeight: 'bold', color: '#fff', letterSpacing: '0.5px' }}>JOGOS AO VIVO</h2>
+            </div>
+            <button 
+              onClick={fetchJogosAoVivo} 
+              style={{ background: 'transparent', border: 'none', color: '#8f93a2', cursor: 'pointer' }}
+              title="Atualizar lista ao vivo"
+            >
+              <RefreshCw size={14} />
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '300px', overflowY: 'auto' }}>
+            {jogosAoVivo.length > 0 ? (
+              jogosAoVivo.map((item, idx) => (
+                <div 
+                  key={idx}
+                  onClick={() => abrirJogoAoVivo(item)}
+                  style={{
+                    padding: '10px 12px',
+                    backgroundColor: '#161824',
+                    borderRadius: '8px',
+                    border: '1px solid #1f2335',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    transition: 'all 0.2s'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = '#ef4444';
+                    e.currentTarget.style.transform = 'translateX(2px)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = '#1f2335';
+                    e.currentTarget.style.transform = 'none';
+                  }}
+                >
+                  <span style={{ fontSize: '0.82rem', fontWeight: 'bold', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {item.nome}
+                  </span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem' }}>
+                    <span style={{ 
+                      color: item.status === 'Finalizado' ? '#8f93a2' : item.status === 'Intervalo' ? '#f59e0b' : '#ef4444', 
+                      fontWeight: 'bold', 
+                      backgroundColor: item.status === 'Finalizado' ? '#1f2335' : item.status === 'Intervalo' ? '#f59e0b22' : '#ef444422', 
+                      padding: '1px 6px', 
+                      borderRadius: '4px' 
+                    }}>
+                      {item.status || `${item.minuto}'`}
+                    </span>
+                    <span style={{ color: '#a6e3a1', fontWeight: 'bold', fontFamily: 'monospace' }}>
+                      {item.placar}
+                    </span>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div style={{ textAlign: 'center', color: '#8f93a2', fontSize: '0.78rem', padding: '15px 0' }}>
+                Nenhum jogo ao vivo no momento.
+              </div>
+            )}
+          </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', flex: 1 }}>
-          {historico.length > 0 ? (
-            historico.map((item, idx) => (
-              <div 
-                key={idx}
-                onClick={() => abrirDoHistorico(item)}
-                style={{
-                  padding: '10px 12px',
-                  backgroundColor: '#161824',
-                  borderRadius: '8px',
-                  border: '1px solid #1f2335',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  fontSize: '0.85rem',
-                  fontWeight: '500',
-                  color: '#cdd6f4',
-                  transition: 'border-color 0.2s'
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.borderColor = '#10b981'}
-                onMouseLeave={(e) => e.currentTarget.style.borderColor = '#1f2335'}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', overflow: 'hidden' }}>
-                  <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#fff' }}>{item.nome}</span>
-                  <span style={{ fontSize: '0.75rem', color: '#8f93a2' }}>ID: {item.match_id}</span>
-                </div>
-                <button 
-                  onClick={(e) => deletarDoHistorico(e, item.match_id)}
+        {/* Seção 2: Histórico Salvo */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid #1f2335', paddingBottom: '10px' }}>
+            <Layers style={{ color: '#10b981' }} size={18} />
+            <h2 style={{ fontSize: '0.9rem', fontWeight: 'bold', color: '#fff', letterSpacing: '0.5px' }}>HISTÓRICO SALVO</h2>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto' }}>
+            {historico.length > 0 ? (
+              historico.map((item, idx) => (
+                <div 
+                  key={idx}
+                  onClick={() => abrirDoHistorico(item)}
                   style={{
-                    background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', opacity: 0.7
+                    padding: '10px 12px',
+                    backgroundColor: '#161824',
+                    borderRadius: '8px',
+                    border: '1px solid #1f2335',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    fontSize: '0.82rem',
+                    fontWeight: '500',
+                    color: '#cdd6f4',
+                    transition: 'border-color 0.2s'
                   }}
-                  title="Remover do histórico"
+                  onMouseEnter={(e) => e.currentTarget.style.borderColor = '#10b981'}
+                  onMouseLeave={(e) => e.currentTarget.style.borderColor = '#1f2335'}
                 >
-                  <Trash2 size={14} />
-                </button>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', overflow: 'hidden' }}>
+                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#fff' }}>{item.nome}</span>
+                    <span style={{ fontSize: '0.72rem', color: '#8f93a2' }}>ID: {item.match_id}</span>
+                  </div>
+                  <button 
+                    onClick={(e) => deletarDoHistorico(e, item.match_id)}
+                    style={{
+                      background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', opacity: 0.7
+                    }}
+                    title="Remover do histórico"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div style={{ textAlign: 'center', color: '#8f93a2', fontSize: '0.78rem', padding: '15px 0' }}>
+                Nenhum jogo salvo.
               </div>
-            ))
-          ) : (
-            <div style={{ textAlign: 'center', color: '#8f93a2', fontSize: '0.8rem', padding: '20px 0' }}>
-              Nenhum jogo salvo no histórico.
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
+
 
       {/* Conteúdo Principal do Dashboard */}
       <div style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '1200px' }}>
@@ -482,67 +656,175 @@ export default function App() {
           </div>
         </div>
 
-        {/* Modal de API Keys */}
+        {/* Modal de API Keys & Telegram Config */}
         {showApiModal && (
           <div style={{
             backgroundColor: '#11131e',
             padding: '20px',
             borderRadius: '12px',
             border: '1px solid #1f2335',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '15px'
+            display: 'grid',
+            gridTemplateColumns: '1fr 1.2fr',
+            gap: '30px'
           }}>
-            <h3 style={{ color: '#fff', fontSize: '1rem', fontWeight: 'bold' }}>Gerenciar Chaves Sofascore API (RapidAPI)</h3>
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <input 
-                type="text" 
-                placeholder="Adicionar Nova Chave..."
-                value={novaChave}
-                onChange={(e) => setNovaChave(e.target.value)}
-                style={{
-                  flex: 1,
-                  padding: '8px 12px',
-                  backgroundColor: '#0b0c10',
-                  border: '1px solid #2f354f',
-                  color: '#fff',
-                  borderRadius: '6px'
-                }}
-              />
-              <button onClick={addKey} style={{
-                backgroundColor: '#10b981', color: '#0b0c10', border: 'none', borderRadius: '6px', padding: '8px 16px', fontWeight: 'bold', cursor: 'pointer'
-              }}>Adicionar</button>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {chaves.map((k, idx) => (
-                <div key={idx} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0f111a', padding: '8px 12px', borderRadius: '6px'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    {idx === 0 ? (
-                      <span style={{ fontSize: '0.75rem', fontWeight: 'bold', padding: '2px 6px', backgroundColor: '#10b98122', color: '#10b981', borderRadius: '4px' }}>
-                        Ativa
-                      </span>
-                    ) : (
-                      <button 
-                        onClick={() => definirChavePrincipal(k)}
-                        style={{
-                          fontSize: '0.75rem', fontWeight: 'bold', padding: '2px 6px', backgroundColor: '#1f2335', color: '#c5c6c7', border: 'none', borderRadius: '4px', cursor: 'pointer'
-                        }}
-                      >
-                        Ativar
-                      </button>
-                    )}
-                    <span style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}>{k.slice(0, 15)}...{k.slice(-8)}</span>
+            {/* Coluna 1: API Keys */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+              <h3 style={{ color: '#fff', fontSize: '1rem', fontWeight: 'bold', borderBottom: '1px solid #1f2335', paddingBottom: '8px' }}>
+                🔑 Chaves API Sofascore
+              </h3>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <input 
+                  type="text" 
+                  placeholder="Adicionar Nova Chave..."
+                  value={novaChave}
+                  onChange={(e) => setNovaChave(e.target.value)}
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    backgroundColor: '#0b0c10',
+                    border: '1px solid #2f354f',
+                    color: '#fff',
+                    borderRadius: '6px',
+                    fontSize: '0.85rem'
+                  }}
+                />
+                <button onClick={addKey} style={{
+                  backgroundColor: '#10b981', color: '#0b0c10', border: 'none', borderRadius: '6px', padding: '8px 16px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem'
+                }}>Adicionar</button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+                {chaves.map((k, idx) => (
+                  <div key={idx} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#0f111a', padding: '8px 12px', borderRadius: '6px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      {idx === 0 ? (
+                        <span style={{ fontSize: '0.7rem', fontWeight: 'bold', padding: '2px 6px', backgroundColor: '#10b98122', color: '#10b981', borderRadius: '4px' }}>
+                          Ativa
+                        </span>
+                      ) : (
+                        <button 
+                          onClick={() => definirChavePrincipal(k)}
+                          style={{
+                            fontSize: '0.7rem', fontWeight: 'bold', padding: '2px 6px', backgroundColor: '#1f2335', color: '#c5c6c7', border: 'none', borderRadius: '4px', cursor: 'pointer'
+                          }}
+                        >
+                          Ativar
+                        </button>
+                      )}
+                      <span style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>{k.slice(0, 10)}...{k.slice(-6)}</span>
+                    </div>
+                    <button onClick={() => removeKey(k)} style={{
+                      backgroundColor: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer'
+                    }}><Trash2 size={14} /></button>
                   </div>
-                  <button onClick={() => removeKey(k)} style={{
-                    backgroundColor: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer'
-                  }}><Trash2 size={16} /></button>
+                ))}
+              </div>
+            </div>
+
+            {/* Coluna 2: Telegram Bot Config */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', borderLeft: '1px solid #1f2335', paddingLeft: '30px' }}>
+              <h3 style={{ color: '#fff', fontSize: '1rem', fontWeight: 'bold', borderBottom: '1px solid #1f2335', paddingBottom: '8px' }}>
+                🤖 Robô do Telegram
+              </h3>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div>
+                  <label style={{ fontSize: '0.8rem', color: '#8f93a2', display: 'block', marginBottom: '4px' }}>Token do Bot:</label>
+                  <input 
+                    type="password" 
+                    placeholder="Ex: 123456789:ABCdefGhI..."
+                    value={telegramToken}
+                    onChange={(e) => setTelegramToken(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      backgroundColor: '#0b0c10',
+                      border: '1px solid #2f354f',
+                      color: '#fff',
+                      borderRadius: '6px',
+                      fontSize: '0.85rem'
+                    }}
+                  />
                 </div>
-              ))}
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '0.8rem', color: '#8f93a2', display: 'block', marginBottom: '4px' }}>Chat ID / Canal:</label>
+                    <input 
+                      type="text" 
+                      placeholder="Ex: -100123456789"
+                      value={telegramChatId}
+                      onChange={(e) => setTelegramChatId(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        backgroundColor: '#0b0c10',
+                        border: '1px solid #2f354f',
+                        color: '#fff',
+                        borderRadius: '6px',
+                        fontSize: '0.85rem'
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '0.8rem', color: '#8f93a2', display: 'block', marginBottom: '4px' }}>Confiança Mínima (%):</label>
+                    <input 
+                      type="number" 
+                      min="50"
+                      max="100"
+                      value={telegramMinProb}
+                      onChange={(e) => setTelegramMinProb(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        backgroundColor: '#0b0c10',
+                        border: '1px solid #2f354f',
+                        color: '#fff',
+                        borderRadius: '6px',
+                        fontSize: '0.85rem',
+                        textAlign: 'center'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '5px' }}>
+                  <input 
+                    type="checkbox" 
+                    id="tg_enabled"
+                    checked={telegramEnabled}
+                    onChange={(e) => setTelegramEnabled(e.target.checked)}
+                    style={{ cursor: 'pointer', width: '16px', height: '16px' }}
+                  />
+                  <label htmlFor="tg_enabled" style={{ fontSize: '0.85rem', color: '#c5c6c7', cursor: 'pointer', fontWeight: 'bold' }}>
+                    Ativar Robô de Sinais Automatizados
+                  </label>
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+                  <button 
+                    onClick={saveTelegramConfig} 
+                    style={{
+                      flex: 1, backgroundColor: '#10b981', color: '#0b0c10', border: 'none', borderRadius: '6px', padding: '8px 12px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem'
+                    }}
+                  >
+                    Salvar
+                  </button>
+                  <button 
+                    onClick={testTelegramBot} 
+                    style={{
+                      flex: 1, backgroundColor: '#1f2335', color: '#fff', border: '1px solid #2f354f', borderRadius: '6px', padding: '8px 12px', fontWeight: 'bold', cursor: 'pointer', fontSize: '0.85rem'
+                    }}
+                  >
+                    Enviar Teste
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
+
 
         {/* Abas dos Jogos (Tab Bar) */}
         {jogos.length > 0 && (
@@ -598,6 +880,25 @@ export default function App() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
                 <span style={{ fontSize: '0.8rem', color: '#8f93a2', textTransform: 'uppercase', letterSpacing: '1px' }}>Time Mandante</span>
                 <h2 style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#89b4fa' }}>{jogoAtivoObj.dados.home}</h2>
+                
+                {jogoAtivoObj.dados.ap && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '0.72rem', color: '#8f93a2', width: '28px' }}>AP1</span>
+                      <div style={{ width: '80px', height: '5px', backgroundColor: '#0b0c10', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div style={{ width: `${jogoAtivoObj.dados.ap.ap1_home}%`, height: '100%', backgroundColor: '#10b981' }} />
+                      </div>
+                      <span style={{ fontSize: '0.72rem', color: '#10b981', fontWeight: 'bold' }}>{Math.round(jogoAtivoObj.dados.ap.ap1_home)}%</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '0.72rem', color: '#8f93a2', width: '28px' }}>AP2</span>
+                      <div style={{ width: '80px', height: '5px', backgroundColor: '#0b0c10', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div style={{ width: `${jogoAtivoObj.dados.ap.ap2_home}%`, height: '100%', backgroundColor: '#f59e0b' }} />
+                      </div>
+                      <span style={{ fontSize: '0.72rem', color: '#f59e0b', fontWeight: 'bold' }}>{Math.round(jogoAtivoObj.dados.ap.ap2_home)}%</span>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
@@ -622,8 +923,28 @@ export default function App() {
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '5px' }}>
                 <span style={{ fontSize: '0.8rem', color: '#8f93a2', textTransform: 'uppercase', letterSpacing: '1px' }}>Time Visitante</span>
                 <h2 style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#f9e2af' }}>{jogoAtivoObj.dados.away}</h2>
+
+                {jogoAtivoObj.dados.ap && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px', alignItems: 'flex-end' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '0.72rem', color: '#10b981', fontWeight: 'bold' }}>{Math.round(jogoAtivoObj.dados.ap.ap1_away)}%</span>
+                      <div style={{ width: '80px', height: '5px', backgroundColor: '#0b0c10', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div style={{ width: `${jogoAtivoObj.dados.ap.ap1_away}%`, height: '100%', backgroundColor: '#10b981' }} />
+                      </div>
+                      <span style={{ fontSize: '0.72rem', color: '#8f93a2', width: '28px', textAlign: 'right' }}>AP1</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '0.72rem', color: '#f59e0b', fontWeight: 'bold' }}>{Math.round(jogoAtivoObj.dados.ap.ap2_away)}%</span>
+                      <div style={{ width: '80px', height: '5px', backgroundColor: '#0b0c10', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div style={{ width: `${jogoAtivoObj.dados.ap.ap2_away}%`, height: '100%', backgroundColor: '#f59e0b' }} />
+                      </div>
+                      <span style={{ fontSize: '0.72rem', color: '#8f93a2', width: '28px', textAlign: 'right' }}>AP2</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
+
 
             {/* Área de Controles do Minuto e Atualização */}
             <div style={{

@@ -87,6 +87,30 @@ class HistoricoItem(BaseModel):
     nome: str
     url: str
 
+FICHEIRO_TELEGRAM = "telegram_config.json"
+
+class TelegramConfigRequest(BaseModel):
+    token: str
+    chat_id: str
+    enabled: bool = True
+    min_prob: int = 70
+
+def carregar_telegram_config() -> dict:
+    if os.path.exists(FICHEIRO_TELEGRAM):
+        try:
+            with open(FICHEIRO_TELEGRAM, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {"token": "", "chat_id": "", "enabled": False, "min_prob": 70}
+
+def salvar_telegram_config(config: dict):
+    with open(FICHEIRO_TELEGRAM, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+ALERTAS_ENVIADOS = set()
+
+
 def carregar_chaves():
     if os.path.exists(FICHEIRO_CHAVES):
         with open(FICHEIRO_CHAVES, "r", encoding="utf-8") as f:
@@ -239,6 +263,123 @@ def remover_do_historico(match_id: str):
     salvar_historico(historico)
     return {"status": "ok", "historico": historico}
 
+@app.get("/api/telegram/config")
+def obter_telegram_config():
+    return carregar_telegram_config()
+
+@app.post("/api/telegram/config")
+def atualizar_telegram_config(config: TelegramConfigRequest):
+    cfg = config.dict()
+    salvar_telegram_config(cfg)
+    return {"status": "ok", "config": cfg}
+
+@app.post("/api/telegram/test")
+def testar_telegram(config: TelegramConfigRequest):
+    url_tg = f"https://api.telegram.org/bot{config.token}/sendMessage"
+    payload = {
+        "chat_id": config.chat_id,
+        "text": "🤖 *Predator Scanner* - Conexão de teste efetuada com sucesso!",
+        "parse_mode": "Markdown"
+    }
+    try:
+        r = requests.post(url_tg, json=payload, timeout=5)
+        if r.status_code == 200:
+            return {"status": "ok"}
+        return {"status": "error", "detail": r.text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/jogos/aovivo")
+def obter_jogos_ao_vivo():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    driver = None
+    lista_formatada = []
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        driver.get("https://www.sofascore.com/pt")
+        driver.implicitly_wait(6)
+        
+        elements = driver.find_elements("xpath", "//*[contains(@class, 'd_flex') and contains(@class, 'flex-wrap_wrap') and contains(@class, 'gap_md')]//a[@href]")
+        
+        if not elements:
+            elements = driver.find_elements("xpath", "//a[contains(@href, '/football/match/')]")
+
+        links_vistos = set()
+        for elem in elements:
+            try:
+                href = elem.get_attribute("href")
+                if href and "/football/match/" in href and href not in links_vistos:
+                    links_vistos.add(href)
+                    match_id = extrair_id_sofascore(href)
+                    
+                    texto = elem.text.strip()
+                    linhas = [l.strip() for l in texto.split("\n") if l.strip()]
+                    
+                    nome = "Jogo"
+                    placar = "0 - 0"
+                    minuto = 45
+                    
+                    try:
+                        slug = href.split("/")[-2]
+                        slug_parts = slug.split("-")
+                        if len(slug_parts) >= 2:
+                            nome = f"{slug_parts[0].capitalize()} x {slug_parts[1].capitalize()}"
+                    except:
+                        pass
+                        
+                    status = f"{minuto}'"
+                    if len(linhas) >= 2:
+                        is_finalizado = any(x in linhas for x in ["FT", "Fim", "Encerrado", "Ended"])
+                        is_intervalo = any(x in linhas for x in ["HT", "Intervalo"])
+                        
+                        if is_finalizado:
+                            status = "Finalizado"
+                            minuto = 90
+                        elif is_intervalo:
+                            status = "Intervalo"
+                            minuto = 45
+
+                        if nome == "Jogo":
+                            nome = " x ".join([l for l in linhas if not l.isdigit() and ":" not in l and "'" not in l and l not in ["FT", "Fim", "Encerrado", "Ended", "HT", "Intervalo"]][:2])
+                        
+                        scores = [l for l in linhas if l.isdigit()]
+                        if len(scores) >= 2:
+                            placar = f"{scores[0]} - {scores[1]}"
+                            
+                        if not is_finalizado and not is_intervalo:
+                            min_match = [l for l in linhas if "'" in l]
+                            if min_match:
+                                nums = re.findall(r"\d+", min_match[0])
+                                if nums:
+                                    minuto = int(nums[0])
+                                    status = f"{minuto}'"
+                    
+                    lista_formatada.append({
+                        "match_id": match_id,
+                        "nome": nome,
+                        "placar": placar,
+                        "minuto": minuto,
+                        "status": status,
+                        "url": href
+                    })
+            except:
+                continue
+                
+        return {"jogos": lista_formatada[:20]}
+    except Exception as e:
+        print(f"Erro ao buscar ao vivo via Selenium: {e}")
+        return {"jogos": []}
+    finally:
+        if driver:
+            driver.quit()
+
 @app.get("/api/jogo/detalhes")
 def obter_jogo_detalhes(url: str):
     match_id = extrair_id_sofascore(url)
@@ -261,24 +402,68 @@ def obter_jogo_detalhes(url: str):
     
     return {"match_id": match_id, "event": event}
 
+def calcular_ap1_ap2(match_id: str, minuto_atual: int) -> dict:
+    url = f"https://api.sofascore.com/api/v1/event/{match_id}/graph"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    ap_data = {
+        "ap1_home": 0.0,
+        "ap1_away": 0.0,
+        "ap2_home": 0.0,
+        "ap2_away": 0.0
+    }
+    
+    if match_id == "offline_sim":
+        ap_data["ap1_home"] = 65.0
+        ap_data["ap1_away"] = 30.0
+        ap_data["ap2_home"] = 80.0
+        ap_data["ap2_away"] = 15.0
+        return ap_data
+        
+    try:
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            dados = r.json()
+            pts = dados.get("graphPoints", [])
+            
+            pts_valido = [p for p in pts if p.get("minute", 0) <= minuto_atual]
+            
+            pts_10 = [p for p in pts_valido if p.get("minute", 0) >= max(0, minuto_atual - 10)]
+            if pts_10:
+                h10 = sum(p.get("value", 0) for p in pts_10 if p.get("value", 0) > 0)
+                a10 = sum(abs(p.get("value", 0)) for p in pts_10 if p.get("value", 0) < 0)
+                ap_data["ap1_home"] = min(100.0, (h10 / 10.0) * 3.5)
+                ap_data["ap1_away"] = min(100.0, (a10 / 10.0) * 3.5)
+                
+            pts_5 = [p for p in pts_valido if p.get("minute", 0) >= max(0, minuto_atual - 5)]
+            if pts_5:
+                h5 = sum(p.get("value", 0) for p in pts_5 if p.get("value", 0) > 0)
+                a5 = sum(abs(p.get("value", 0)) for p in pts_5 if p.get("value", 0) < 0)
+                ap_data["ap2_home"] = min(100.0, (h5 / 5.0) * 4.5)
+                ap_data["ap2_away"] = min(100.0, (a5 / 5.0) * 4.5)
+    except Exception as e:
+        print(f"Erro ao calcular AP1/AP2: {e}")
+        
+    return ap_data
+
 @app.get("/api/jogo/estatisticas/{match_id}")
 def obter_estatisticas(match_id: str, periodo: str = "ALL", minuto: Optional[int] = None):
     chaves = carregar_chaves()
     
-    # Busca detalhes do placar e status
     api_url_ev = f"https://sofascore-sport-api.p.rapidapi.com/api/event/{match_id}"
     dados_ev, _ = realizar_requisicao(api_url_ev, chaves)
     
-    # Busca estatísticas detalhadas do jogo
     api_url_stat = f"https://sofascore-sport-api.p.rapidapi.com/api/event/{match_id}/statistics"
     dados_stat, _ = realizar_requisicao(api_url_stat, chaves)
     
     if not dados_stat:
         raise HTTPException(status_code=502, detail="Erro nas estatísticas da API")
         
-    return processar_estatisticas(dados_ev, dados_stat, periodo, minuto)
+    return processar_estatisticas(dados_ev, dados_stat, periodo, minuto, match_id)
 
-def processar_estatisticas(dados_ev, dados_stat, periodo_selecionado, minuto_manual=None):
+def processar_estatisticas(dados_ev, dados_stat, periodo_selecionado, minuto_manual=None, match_id="offline_sim"):
     event = dados_ev.get("event", {}) if dados_ev else {}
     home_name = event.get("homeTeam", {}).get("name", "CASA")
     away_name = event.get("awayTeam", {}).get("name", "VISITANTE")
@@ -286,14 +471,12 @@ def processar_estatisticas(dados_ev, dados_stat, periodo_selecionado, minuto_man
     g_fora = event.get("awayScore", {}).get("current", 0)
     gols_atuais = g_casa + g_fora
 
-    # Estimar minuto
     minuto_atual = 45
     status_match = event.get("status", {})
     if status_match.get("type", "") == "inprogress":
         nums = re.findall(r"\d+", status_match.get("description", "45"))
         minuto_atual = int(nums[0]) if nums else 45
 
-    # Sobrescreve pelo minuto manual se fornecido
     if minuto_manual is not None:
         minuto_atual = minuto_manual
 
@@ -323,8 +506,35 @@ def processar_estatisticas(dados_ev, dados_stat, periodo_selecionado, minuto_man
                         "away_val": away_val
                     })
 
-    # Análise Matemática de Veredito
     analise = calcular_analise(m_dict, minuto_atual, gols_atuais)
+    ap_data = calcular_ap1_ap2(match_id, minuto_atual)
+
+    # Enviar alertas do Telegram se configurado e habilitado
+    tg_cfg = carregar_telegram_config()
+    if tg_cfg.get("enabled") and tg_cfg.get("token") and tg_cfg.get("chat_id"):
+        for sug in analise.get("sugestoes", []):
+            prob = sug.get("probabilidade", 0)
+            if prob >= tg_cfg.get("min_prob", 70):
+                chave_alerta = f"{match_id}_{sug.get('mercado')}_{sug.get('selecao')}"
+                if chave_alerta not in ALERTAS_ENVIADOS:
+                    ALERTAS_ENVIADOS.add(chave_alerta)
+                    txt = (
+                        f"🚨 *NOVO SINAL PREDATOR* 🚨\n\n"
+                        f"🏟️ *Jogo:* {home_name} x {away_name}\n"
+                        f"⏱️ *Tempo:* {minuto_atual}' (Placar: {g_casa} - {g_fora})\n"
+                        f"📊 *Mercado:* {sug.get('mercado')}\n"
+                        f"🎯 *Entrada:* `{sug.get('selecao')}`\n"
+                        f"📈 *Confiança:* {prob}%\n"
+                        f"🔥 *Odd Justa:* {sug.get('odd_justa')}\n"
+                        f"⚡ *AP1 (C/V):* {ap_data['ap1_home']:.0f}% | {ap_data['ap1_away']:.0f}%\n"
+                        f"⚡ *AP2 (C/V):* {ap_data['ap2_home']:.0f}% | {ap_data['ap2_away']:.0f}%\n\n"
+                        f"💡 *Raciocínio:* {sug.get('raciocinio')}"
+                    )
+                    url_tg = f"https://api.telegram.org/bot{tg_cfg['token']}/sendMessage"
+                    try:
+                        requests.post(url_tg, json={"chat_id": tg_cfg["chat_id"], "text": txt, "parse_mode": "Markdown"}, timeout=5)
+                    except Exception as tg_err:
+                        print(f"Erro ao enviar sinal para Telegram: {tg_err}")
 
     return {
         "home": home_name,
@@ -333,8 +543,10 @@ def processar_estatisticas(dados_ev, dados_stat, periodo_selecionado, minuto_man
         "gols_atuais": gols_atuais,
         "minuto": minuto_atual,
         "estatisticas": metricas_traduzidas,
-        "analise": analise
+        "analise": analise,
+        "ap": ap_data
     }
+
 
 def calcular_analise(m, minuto, gols_atuais):
     def v(k, side="home"): return m[k][side] if k in m else 0.0
